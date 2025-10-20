@@ -305,7 +305,6 @@ class JiraClient(AtlassianClientBase):
             limit=max_results,
             start=start_at,
             fields=fields,
-            expand='renderedFields',
         )
 
         issues = data.get("issues", [])

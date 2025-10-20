@@ -148,7 +148,6 @@ class TestJiraClient:
                 "attachment",
                 "issuelinks",
             ],
-            expand='renderedFields',
         )
 
     def test_get_linked_issues(
