@@ -1,14 +1,34 @@
-"""
-Configuration manager for Womba CLI
-Handles local config file and cloud sync
+"""Configuration manager for the Womba CLI.
+
+This module needs to operate even in very minimal environments where optional
+dependencies like ``httpx`` or ``loguru`` might not be installed.  The
+implementation therefore falls back to the standard library when those
+packages are unavailable and simply disables cloud synchronisation features
+that require them.
 """
 
-import os
-import yaml
-import httpx
 from pathlib import Path
 from typing import Optional
-from loguru import logger
+
+import json
+
+try:  # pragma: no cover - optional dependency in CLI usage
+    import yaml
+except ModuleNotFoundError:  # pragma: no cover - fallback to json for tests
+    yaml = None
+
+try:  # pragma: no cover - exercised in environments without optional deps
+    import httpx
+except ModuleNotFoundError:  # pragma: no cover - handled at runtime
+    httpx = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - exercised when loguru is missing
+    from loguru import logger
+except ModuleNotFoundError:  # pragma: no cover - fallback for minimal envs
+    import logging
+
+    logger = logging.getLogger(__name__)
+    logger.addHandler(logging.NullHandler())
 
 from src.config.user_config import WombaConfig
 
@@ -25,7 +45,11 @@ class ConfigManager:
         """Load config from local file, then try cloud sync"""
         local_config = self._load_local()
         
-        if local_config and local_config.womba_api_key:
+        if (
+            local_config
+            and local_config.womba_api_key
+            and httpx is not None
+        ):
             # Try to sync with cloud
             try:
                 cloud_config = self._load_cloud(local_config.womba_api_key)
@@ -44,7 +68,7 @@ class ConfigManager:
         self._save_local(config)
         
         # Sync to cloud if enabled
-        if sync_cloud and config.womba_api_key:
+        if sync_cloud and config.womba_api_key and httpx is not None:
             try:
                 self._save_cloud(config)
             except Exception as e:
@@ -61,17 +85,23 @@ class ConfigManager:
         
         try:
             with open(self.config_file, 'r') as f:
-                data = yaml.safe_load(f) or {}
+                if yaml is not None:
+                    data = yaml.safe_load(f) or {}
+                else:  # pragma: no cover - exercised when yaml missing
+                    data = json.load(f)
             return WombaConfig.from_dict(data)
         except Exception as e:
             logger.error(f"Error loading local config: {e}")
             return None
-    
+
     def _save_local(self, config: WombaConfig) -> None:
         """Save config to local YAML file"""
         try:
             with open(self.config_file, 'w') as f:
-                yaml.safe_dump(config.to_dict(), f, default_flow_style=False)
+                if yaml is not None:
+                    yaml.safe_dump(config.to_dict(), f, default_flow_style=False)
+                else:  # pragma: no cover - exercised when yaml missing
+                    json.dump(config.to_dict(), f, indent=2)
             logger.info(f"Config saved to {self.config_file}")
         except Exception as e:
             logger.error(f"Error saving local config: {e}")
@@ -79,6 +109,10 @@ class ConfigManager:
     
     def _load_cloud(self, api_key: str) -> Optional[WombaConfig]:
         """Load config from Womba cloud API"""
+        if httpx is None:  # pragma: no cover - exercised without httpx
+            logger.debug("Cloud sync disabled because httpx is unavailable")
+            return None
+
         try:
             response = httpx.get(
                 "https://womba.onrender.com/api/v1/config/sync",
@@ -101,6 +135,10 @@ class ConfigManager:
     
     def _save_cloud(self, config: WombaConfig) -> None:
         """Save config to Womba cloud API"""
+        if httpx is None:  # pragma: no cover - exercised without httpx
+            logger.debug("Skipping cloud config save because httpx is missing")
+            return None
+
         try:
             response = httpx.post(
                 "https://womba.onrender.com/api/v1/config/sync",
