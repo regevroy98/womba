@@ -4,6 +4,7 @@ Unit tests for StoryCollector.
 
 import pytest
 
+from src.aggregator.jira_client import JiraClient
 from src.aggregator.story_collector import StoryCollector
 
 
@@ -44,6 +45,33 @@ class TestStoryCollector:
         assert len(bugs) == 1
         assert bugs[0].key == "PROJ-200"
         assert bugs[0].issue_type == "Bug"
+
+    @pytest.mark.asyncio
+    async def test_fetch_related_bugs_post_success(
+        self,
+        mocker,
+        sample_jira_story,
+        sample_jira_issue_data,
+        mock_jira_api,
+    ):
+        """Regression: ensure POST-based search results surface as related bugs."""
+
+        mock_jira_api.post.return_value = {
+            "issues": [sample_jira_issue_data],
+            "total": 1,
+        }
+
+        jira_client = JiraClient()
+        collector = StoryCollector(
+            jira_client=jira_client,
+            confluence_client=mocker.MagicMock(),
+        )
+
+        bugs = await collector._fetch_related_bugs(sample_jira_story)
+
+        assert len(bugs) == 1
+        assert bugs[0].key == sample_jira_issue_data["key"]
+        mock_jira_api.post.assert_called()
 
     def test_build_context_graph(self, sample_jira_story):
         """Test building context graph from stories."""

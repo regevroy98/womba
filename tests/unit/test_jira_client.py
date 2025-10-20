@@ -98,19 +98,47 @@ class TestJiraClient:
         assert "Criterion 1" in ac or "criterion 1" in ac.lower()
 
     @pytest.mark.asyncio
-    async def test_search_issues(self, mocker: MockerFixture, sample_jira_issue_data):
+    async def test_search_issues(
+        self,
+        mocker: MockerFixture,
+        sample_jira_issue_data,
+        mock_jira_api,
+    ):
         """Test searching issues with JQL."""
-        mock_response = Response(
-            200, json={"issues": [sample_jira_issue_data], "total": 1}
-        )
-        mock_post = mocker.patch("httpx.AsyncClient.post", return_value=mock_response)
+        mock_jira_api.post.return_value = {
+            "issues": [sample_jira_issue_data],
+            "total": 1,
+        }
 
         client = JiraClient()
         stories = await client.search_issues("project = PROJ", max_results=10)
 
         assert len(stories) == 1
         assert stories[0].key == "PROJ-123"
-        mock_post.assert_called_once()
+        mock_jira_api.post.assert_called_once_with(
+            "rest/api/3/search",
+            json={
+                "jql": "project = PROJ",
+                "startAt": 0,
+                "maxResults": 10,
+                "fields": [
+                    "summary",
+                    "description",
+                    "issuetype",
+                    "status",
+                    "priority",
+                    "assignee",
+                    "reporter",
+                    "created",
+                    "updated",
+                    "labels",
+                    "components",
+                    "attachment",
+                    "issuelinks",
+                ],
+                "expand": ["renderedFields"],
+            },
+        )
 
     @pytest.mark.asyncio
     async def test_get_linked_issues(
