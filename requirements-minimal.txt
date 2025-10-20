@@ -12,7 +12,7 @@ anthropic==0.18.1
 openai==1.12.0
 
 # MCP Integration
-mcp==0.9.0
+mcp==0.9.1
 
 # HTTP Client
 httpx==0.26.0
@@ -30,5 +30,3 @@ pytest==8.0.0
 pytest-asyncio==0.23.3
 pytest-cov==4.1.0
 pytest-mock==3.12.0
-httpx-mock==0.1.3
-
