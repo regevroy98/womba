@@ -7,7 +7,19 @@ from typing import AsyncGenerator, Dict
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from httpx import AsyncClient
+try:  # pragma: no cover - optional dependency in minimal environments
+    from httpx import AsyncClient
+except ImportError:  # pragma: no cover
+    AsyncClient = None  # type: ignore[misc]
+
+
+@pytest.fixture(autouse=True)
+def mock_jira_api(mocker):
+    """Provide a mocked Atlassian Jira SDK instance for all tests."""
+
+    mock_instance = MagicMock()
+    mocker.patch("src.aggregator.jira_client.Jira", return_value=mock_instance)
+    return mock_instance
 
 # Set test environment
 os.environ["ENVIRONMENT"] = "test"
@@ -187,6 +199,9 @@ def mock_anthropic_client():
 @pytest.fixture
 async def api_client() -> AsyncGenerator[AsyncClient, None]:
     """Test client for FastAPI app."""
+    if AsyncClient is None:
+        pytest.skip("httpx is not available in the test environment")
+
     from src.api.main import app
 
     async with AsyncClient(app=app, base_url="http://test") as client:

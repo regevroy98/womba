@@ -1,12 +1,16 @@
-"""
-Jira client for fetching stories and issues.
-"""
+"""Jira client for fetching stories and issues."""
 
+import asyncio
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 from loguru import logger
+
+try:
+    from atlassian import Jira
+except ImportError:  # pragma: no cover - runtime safeguard for optional dependency
+    Jira = None
 
 from src.config.settings import settings
 from src.models.story import JiraStory
@@ -33,6 +37,19 @@ class JiraClient:
         self.email = email or settings.jira_email
         self.api_token = api_token or settings.jira_api_token
         self.auth = (self.email, self.api_token)
+
+        if Jira is None:
+            raise ImportError(
+                "The 'atlassian' package is required to initialize JiraClient."
+            )
+
+        self.jira = Jira(
+            url=self.base_url,
+            username=self.email,
+            password=self.api_token,
+            cloud=True,
+            api_version="3",
+        )
 
     def _extract_text_from_adf(self, adf_content: Any) -> str:
         """
@@ -256,11 +273,10 @@ class JiraClient:
         """
         logger.info(f"Searching Jira issues with JQL: {jql}")
 
-        url = f"{self.base_url}/rest/api/2/search"  # Use API v2 for better compatibility
         payload = {
             "jql": jql,
-            "maxResults": max_results,
             "startAt": start_at,
+            "maxResults": max_results,
             "fields": [
                 "summary",
                 "description",
@@ -276,17 +292,46 @@ class JiraClient:
                 "attachment",
                 "issuelinks",
             ],
+            "expand": ["renderedFields"],
         }
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                url, auth=self.auth, json=payload, timeout=30.0
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await self._call_jira(
+            self.jira.post,
+            "search",
+            json=payload,
+        )
 
-        issues = data.get("issues", [])
+        issues = data.get("issues", []) if isinstance(data, dict) else []
         return [self._parse_issue(issue) for issue in issues]
+
+    async def _call_jira(
+        self,
+        method: Callable[..., Any],
+        path: str,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Execute Jira SDK calls safely from async context."""
+
+        call_kwargs = dict(kwargs)
+
+        async def _async_invoke() -> Dict[str, Any]:
+            return await method(path, **call_kwargs)  # type: ignore[func-returns-value]
+
+        def _sync_invoke() -> Dict[str, Any]:
+            try:
+                return method(path, **call_kwargs)
+            except TypeError:
+                if "json" in call_kwargs:
+                    payload = call_kwargs.pop("json")
+                    call_kwargs.setdefault("data", payload)
+                    return method(path, **call_kwargs)
+                raise
+
+        if asyncio.iscoroutinefunction(method):
+            return await _async_invoke()
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _sync_invoke)
 
     async def _get_issue_raw(self, issue_key: str) -> Dict[str, Any]:
         """Get raw issue data from Jira API."""
