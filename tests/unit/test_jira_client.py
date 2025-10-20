@@ -1,10 +1,10 @@
-"""
-Unit tests for JiraClient.
-"""
+"""Unit tests for JiraClient."""
+
+import asyncio
+from unittest import mock
+from unittest.mock import AsyncMock
 
 import pytest
-from httpx import AsyncClient, Response
-from pytest_mock import MockerFixture
 
 from src.aggregator.jira_client import JiraClient
 
@@ -12,24 +12,26 @@ from src.aggregator.jira_client import JiraClient
 class TestJiraClient:
     """Test suite for JiraClient."""
 
-    @pytest.mark.asyncio
-    async def test_get_issue_success(
-        self, mocker: MockerFixture, sample_jira_issue_data
-    ):
+    def test_get_issue_success(self, sample_jira_issue_data):
         """Test successful issue retrieval."""
-        # Mock the HTTP client
-        mock_response = Response(200, json=sample_jira_issue_data)
-        mock_get = mocker.patch(
-            "httpx.AsyncClient.get", return_value=mock_response
-        )
-
+        mock_sdk = mock.Mock()
         client = JiraClient(
             base_url="https://test.atlassian.net",
             email="test@example.com",
             api_token="test-token",
+            sdk_client=mock_sdk,
         )
 
-        story = await client.get_issue("PROJ-123")
+        async def _exercise():
+            with mock.patch.object(
+                client,
+                "_call_jira",
+                AsyncMock(return_value=sample_jira_issue_data),
+            ) as mock_call:
+                story = await client.get_issue("PROJ-123")
+                return story, mock_call
+
+        story, mock_call = asyncio.run(_exercise())
 
         assert story.key == "PROJ-123"
         assert story.summary == "Add user authentication feature"
@@ -38,23 +40,32 @@ class TestJiraClient:
         assert story.priority == "High"
         assert "authentication" in story.labels
         assert "Backend" in story.components
-        mock_get.assert_called_once()
+        mock_call.assert_awaited_once_with(
+            mock_sdk.issue,
+            "PROJ-123",
+            expand='renderedFields,changelog',
+        )
 
-    @pytest.mark.asyncio
-    async def test_get_issue_not_found(self, mocker: MockerFixture):
+    def test_get_issue_not_found(self):
         """Test issue not found error."""
-        mock_response = Response(404, json={"errorMessages": ["Issue not found"]})
-        mock_response.request = mocker.MagicMock()
-        mocker.patch("httpx.AsyncClient.get", return_value=mock_response)
+        mock_sdk = mock.Mock()
+        client = JiraClient(sdk_client=mock_sdk)
 
-        client = JiraClient()
+        async def _exercise():
+            with mock.patch.object(
+                client,
+                "_call_jira",
+                AsyncMock(side_effect=Exception("Issue not found")),
+            ):
+                await client.get_issue("INVALID-999")
 
         with pytest.raises(Exception):
-            await client.get_issue("INVALID-999")
+            asyncio.run(_exercise())
 
-    def test_parse_issue_with_adf_description(self, sample_jira_issue_data):
+    def test_parse_issue_with_adf_description(
+        self, sample_jira_issue_data
+    ):
         """Test parsing issue with Atlassian Document Format description."""
-        # Modify data to use ADF format
         sample_jira_issue_data["fields"]["description"] = {
             "type": "doc",
             "content": [
@@ -65,12 +76,14 @@ class TestJiraClient:
             ],
         }
 
-        client = JiraClient()
+        client = JiraClient(sdk_client=mock.Mock())
         story = client._parse_issue(sample_jira_issue_data)
 
         assert "This is ADF formatted text" in story.description
 
-    def test_extract_acceptance_criteria_from_description(self):
+    def test_extract_acceptance_criteria_from_description(
+        self,
+    ):
         """Test extraction of acceptance criteria from description."""
         fields = {
             "summary": "Test feature",
@@ -83,60 +96,92 @@ class TestJiraClient:
         }
         description = """
         Feature description here.
-        
+
         Acceptance Criteria
         - Criterion 1
         - Criterion 2
-        
+
         Additional notes.
         """
 
-        client = JiraClient()
+        client = JiraClient(sdk_client=mock.Mock())
         ac = client._extract_acceptance_criteria(fields, description)
 
         assert ac is not None
         assert "Criterion 1" in ac or "criterion 1" in ac.lower()
 
-    @pytest.mark.asyncio
-    async def test_search_issues(self, mocker: MockerFixture, sample_jira_issue_data):
+    def test_search_issues(self, sample_jira_issue_data):
         """Test searching issues with JQL."""
-        mock_response = Response(
-            200, json={"issues": [sample_jira_issue_data], "total": 1}
-        )
-        mock_post = mocker.patch("httpx.AsyncClient.post", return_value=mock_response)
+        mock_sdk = mock.Mock()
+        client = JiraClient(sdk_client=mock_sdk)
 
-        client = JiraClient()
-        stories = await client.search_issues("project = PROJ", max_results=10)
+        async def _exercise():
+            with mock.patch.object(
+                client,
+                "_call_jira",
+                AsyncMock(return_value={"issues": [sample_jira_issue_data], "total": 1}),
+            ) as mock_call:
+                stories = await client.search_issues("project = PROJ", max_results=10)
+                return stories, mock_call
+
+        stories, mock_call = asyncio.run(_exercise())
 
         assert len(stories) == 1
         assert stories[0].key == "PROJ-123"
-        mock_post.assert_called_once()
+        mock_call.assert_awaited_once_with(
+            mock_sdk.jql,
+            "project = PROJ",
+            limit=10,
+            start=0,
+            fields=[
+                "summary",
+                "description",
+                "issuetype",
+                "status",
+                "priority",
+                "assignee",
+                "reporter",
+                "created",
+                "updated",
+                "labels",
+                "components",
+                "attachment",
+                "issuelinks",
+            ],
+            expand='renderedFields',
+        )
 
-    @pytest.mark.asyncio
-    async def test_get_linked_issues(
-        self, mocker: MockerFixture, sample_jira_issue_data
+    def test_get_linked_issues(
+        self, sample_jira_issue_data
     ):
         """Test fetching linked issues."""
-        # Add linked issue to data
         linked_issue_data = sample_jira_issue_data.copy()
         linked_issue_data["key"] = "PROJ-124"
-        
+
         main_issue_with_links = sample_jira_issue_data.copy()
         main_issue_with_links["fields"]["issuelinks"] = [
             {"inwardIssue": {"key": "PROJ-124"}}
         ]
 
-        mock_get = mocker.patch(
-            "httpx.AsyncClient.get",
-            side_effect=[
-                Response(200, json=main_issue_with_links),
-                Response(200, json=linked_issue_data),
-            ],
-        )
+        mock_sdk = mock.Mock()
+        client = JiraClient(sdk_client=mock_sdk)
 
-        client = JiraClient()
-        linked_stories = await client.get_linked_issues("PROJ-123")
+        async def _exercise():
+            with mock.patch.object(
+                client,
+                "_get_issue_raw",
+                AsyncMock(return_value=main_issue_with_links),
+            ) as mock_get_raw, mock.patch.object(
+                client,
+                "get_issue",
+                AsyncMock(return_value=client._parse_issue(linked_issue_data)),
+            ) as mock_get_issue:
+                linked_stories = await client.get_linked_issues("PROJ-123")
+                return linked_stories, mock_get_raw, mock_get_issue
+
+        linked_stories, mock_get_raw, mock_get_issue = asyncio.run(_exercise())
 
         assert len(linked_stories) == 1
         assert linked_stories[0].key == "PROJ-124"
-
+        mock_get_raw.assert_awaited_once_with("PROJ-123")
+        mock_get_issue.assert_awaited_once_with("PROJ-124")

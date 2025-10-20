@@ -4,8 +4,6 @@ Interactive configuration wizard for Womba
 
 import sys
 from pathlib import Path
-from loguru import logger
-
 from src.config.user_config import WombaConfig
 from src.config.config_manager import ConfigManager
 
