@@ -116,7 +116,7 @@ class TestJiraClient:
         assert len(stories) == 1
         assert stories[0].key == "PROJ-123"
         mock_jira_api.post.assert_called_once_with(
-            "rest/api/3/search",
+            "search",
             json={
                 "jql": "project = PROJ",
                 "startAt": 0,

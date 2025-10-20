@@ -48,6 +48,7 @@ class JiraClient:
             username=self.email,
             password=self.api_token,
             cloud=True,
+            api_version="3",
         )
 
     def _extract_text_from_adf(self, adf_content: Any) -> str:
@@ -296,7 +297,7 @@ class JiraClient:
 
         data = await self._call_jira(
             self.jira.post,
-            "rest/api/3/search",
+            "search",
             json=payload,
         )
 
