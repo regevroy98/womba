@@ -1,16 +1,18 @@
-"""
-Confluence client for fetching PRDs and technical documentation.
-"""
+"""Confluence client for fetching PRDs and technical documentation."""
 
 from typing import Dict, List, Optional
 
 import httpx
 from loguru import logger
 
+from src.aggregator.atlassian_base import (
+    AtlassianClientBase,
+    AtlassianCredentials,
+)
 from src.config.settings import settings
 
 
-class ConfluenceClient:
+class ConfluenceClient(AtlassianClientBase):
     """Client for interacting with Confluence API."""
 
     def __init__(
@@ -18,7 +20,8 @@ class ConfluenceClient:
         base_url: Optional[str] = None,
         email: Optional[str] = None,
         api_token: Optional[str] = None,
-    ):
+        credentials: Optional[AtlassianCredentials] = None,
+    ) -> None:
         """
         Initialize Confluence client.
 
@@ -27,9 +30,14 @@ class ConfluenceClient:
             email: Confluence user email (defaults to Jira email)
             api_token: Confluence API token (defaults to Jira token or confluence token)
         """
-        self.base_url = (base_url or settings.jira_base_url).rstrip("/")
-        self.email = email or settings.jira_email
-        self.api_token = api_token or settings.confluence_api_token or settings.jira_api_token
+        token = api_token or settings.confluence_api_token
+        super().__init__(
+            credentials=credentials,
+            base_url=base_url,
+            email=email,
+            api_token=token,
+        )
+
         self.auth = (self.email, self.api_token)
 
     async def get_page(self, page_id: str) -> Dict:

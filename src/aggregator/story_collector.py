@@ -1,11 +1,11 @@
 """
-Story collector that aggregates data from multiple sources.
-"""
+"""Story collector that aggregates data from multiple sources."""
 
 from typing import Dict, List, Optional
 
 from loguru import logger
 
+from src.aggregator.atlassian_base import AtlassianCredentials
 from src.models.story import JiraStory
 
 from .confluence_client import ConfluenceClient
@@ -39,16 +39,20 @@ class StoryCollector:
         self,
         jira_client: Optional[JiraClient] = None,
         confluence_client: Optional[ConfluenceClient] = None,
-    ):
+        credentials: Optional[AtlassianCredentials] = None,
+    ) -> None:
         """
         Initialize story collector.
 
         Args:
             jira_client: Jira client instance (creates new if None)
             confluence_client: Confluence client instance (creates new if None)
+            credentials: Shared Atlassian credentials for new clients
         """
-        self.jira_client = jira_client or JiraClient()
-        self.confluence_client = confluence_client or ConfluenceClient()
+        self.jira_client = jira_client or JiraClient(credentials=credentials)
+        self.confluence_client = confluence_client or ConfluenceClient(
+            credentials=credentials
+        )
 
     async def collect_story_context(self, issue_key: str, include_subtasks: bool = True) -> StoryContext:
         """

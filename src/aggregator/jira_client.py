@@ -1,38 +1,83 @@
-"""
-Jira client for fetching stories and issues.
-"""
+"""Jira client for fetching stories and issues using the Atlassian SDK."""
 
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
-import httpx
-from loguru import logger
+try:  # pragma: no cover - allow running without Atlassian SDK installed
+    from atlassian import Jira
+except ModuleNotFoundError:  # pragma: no cover - tests may inject a stub client
+    Jira = Any  # type: ignore[assignment]
+try:  # pragma: no cover - allow running without loguru installed
+    from loguru import logger
+except ModuleNotFoundError:  # pragma: no cover - fallback to stdlib logging
+    import logging
 
-from src.config.settings import settings
-from src.models.story import JiraStory
+    logger = logging.getLogger(__name__)
+
+from src.aggregator.atlassian_base import AtlassianClientBase, AtlassianCredentials
+
+try:  # pragma: no cover - allow running without pydantic models installed
+    from src.models.story import JiraStory
+except ModuleNotFoundError:  # pragma: no cover - fallback dataclass for tests
+    @dataclass
+    class JiraStory:  # type: ignore[override]
+        key: str
+        summary: str
+        description: str
+        issue_type: str
+        status: str
+        priority: str
+        assignee: Optional[str]
+        reporter: str
+        created: Optional[datetime]
+        updated: Optional[datetime]
+        labels: List[str]
+        components: List[str]
+        acceptance_criteria: Optional[str]
+        linked_issues: List[str]
+        attachments: List[str]
+        custom_fields: Dict[str, Any]
 
 
-class JiraClient:
-    """Client for interacting with Jira API."""
+class JiraClient(AtlassianClientBase):
+    """Client for interacting with Jira API via the Atlassian SDK."""
 
     def __init__(
         self,
         base_url: Optional[str] = None,
         email: Optional[str] = None,
         api_token: Optional[str] = None,
-    ):
-        """
-        Initialize Jira client.
+        credentials: Optional[AtlassianCredentials] = None,
+        sdk_client: Optional[Jira] = None,
+    ) -> None:
+        """Initialize Jira client with shared Atlassian credentials."""
 
-        Args:
-            base_url: Jira base URL (defaults to settings)
-            email: Jira user email (defaults to settings)
-            api_token: Jira API token (defaults to settings)
-        """
-        self.base_url = (base_url or settings.jira_base_url).rstrip("/")
-        self.email = email or settings.jira_email
-        self.api_token = api_token or settings.jira_api_token
-        self.auth = (self.email, self.api_token)
+        super().__init__(
+            credentials=credentials,
+            base_url=base_url,
+            email=email,
+            api_token=api_token,
+        )
+
+        self.jira = sdk_client or Jira(
+            url=self.base_url,
+            username=self.email,
+            password=self.api_token,
+            cloud=True,
+        )
+
+        logger.info(f"Initialized Jira client for {self.base_url}")
+
+    async def _call_jira(
+        self, func: Callable[..., Any], *args: Any, **kwargs: Any
+    ) -> Any:
+        """Execute a Jira SDK call in a worker thread."""
+
+        return await asyncio.to_thread(func, *args, **kwargs)
 
     def _extract_text_from_adf(self, adf_content: Any) -> str:
         """
@@ -108,32 +153,28 @@ class JiraClient:
             List of comment objects with author, body, and created timestamp
         """
         logger.info(f"Fetching comments for: {issue_key}")
-        
-        url = f"{self.base_url}/rest/api/2/issue/{issue_key}/comment"
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, auth=self.auth)
-            response.raise_for_status()
-            data = response.json()
-            
-            comments = []
-            for comment in data.get('comments', []):
-                author = comment.get('author', {}).get('displayName', 'Unknown')
-                body = comment.get('body', '')
-                created = comment.get('created', '')
-                
-                # Extract text from ADF if body is a dict
-                if isinstance(body, dict):
-                    body = self._extract_text_from_adf(body)
-                
-                comments.append({
+
+        data = await self._call_jira(self.jira.issue_get_comments, issue_key)
+
+        comments = []
+        for comment in data.get('comments', []):
+            author = comment.get('author', {}).get('displayName', 'Unknown')
+            body = comment.get('body', '')
+            created = comment.get('created', '')
+
+            if isinstance(body, dict):
+                body = self._extract_text_from_adf(body)
+
+            comments.append(
+                {
                     'author': author,
                     'body': body,
-                    'created': created
-                })
-            
-            logger.info(f"Found {len(comments)} comments for {issue_key}")
-            return comments
+                    'created': created,
+                }
+            )
+
+        logger.info(f"Found {len(comments)} comments for {issue_key}")
+        return comments
 
     async def get_issue_with_subtasks(self, issue_key: str) -> tuple[JiraStory, List[JiraStory]]:
         """
@@ -146,39 +187,30 @@ class JiraClient:
             Tuple of (main_story, subtasks)
         """
         try:
-            from jira import JIRA
-            
-            # Create Jira SDK client
-            jira = JIRA(
-                server=self.base_url,
-                basic_auth=(self.email, self.api_token)
+            issue = await self._call_jira(
+                self.jira.issue,
+                issue_key,
+                expand='subtasks,renderedFields,changelog',
             )
-            
-            # Get the issue with subtasks
-            issue = jira.issue(issue_key)
-            
-            # Convert main issue to JiraStory
-            main_story = await self.get_issue(issue_key)
-            
-            # Get subtasks if they exist
+
+            main_story = self._parse_issue(issue)
+
             subtasks = []
-            if hasattr(issue.fields, 'subtasks') and issue.fields.subtasks:
-                logger.info(f"Found {len(issue.fields.subtasks)} subtasks for {issue_key}")
-                for subtask in issue.fields.subtasks:
-                    try:
-                        subtask_story = await self.get_issue(subtask.key)
-                        subtasks.append(subtask_story)
-                    except Exception as e:
-                        logger.warning(f"Could not fetch subtask {subtask.key}: {e}")
-            
+            for subtask in issue.get('fields', {}).get('subtasks', []):
+                subtask_key = subtask.get('key')
+                if not subtask_key:
+                    continue
+                try:
+                    subtask_story = await self.get_issue(subtask_key)
+                    subtasks.append(subtask_story)
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.warning(f"Could not fetch subtask {subtask_key}: {exc}")
+
+            logger.info(f"Found {len(subtasks)} subtasks for {issue_key}")
             return main_story, subtasks
-            
-        except ImportError:
-            logger.warning("Jira SDK not installed. Install with: pip install jira")
-            main_story = await self.get_issue(issue_key)
-            return main_story, []
-        except Exception as e:
-            logger.error(f"Error fetching subtasks with SDK: {e}")
+
+        except Exception as exc:
+            logger.error(f"Error fetching subtasks with SDK: {exc}")
             main_story = await self.get_issue(issue_key)
             return main_story, []
 
@@ -193,20 +225,15 @@ class JiraClient:
             JiraStory object
 
         Raises:
-            httpx.HTTPError: If the request fails
+            Exception: If the Jira SDK request fails
         """
         logger.info(f"Fetching Jira issue: {issue_key}")
 
-        url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
-        params = {
-            "expand": "renderedFields,changelog",
-            "fields": "summary,description,issuetype,status,priority,assignee,reporter,created,updated,labels,components,attachment,issuelinks,customfield_*",
-        }
-
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, auth=self.auth, params=params, timeout=30.0)
-            response.raise_for_status()
-            data = response.json()
+        data = await self._call_jira(
+            self.jira.issue,
+            issue_key,
+            expand='renderedFields,changelog',
+        )
 
         return self._parse_issue(data)
 
@@ -256,45 +283,41 @@ class JiraClient:
         """
         logger.info(f"Searching Jira issues with JQL: {jql}")
 
-        url = f"{self.base_url}/rest/api/2/search"  # Use API v2 for better compatibility
-        payload = {
-            "jql": jql,
-            "maxResults": max_results,
-            "startAt": start_at,
-            "fields": [
-                "summary",
-                "description",
-                "issuetype",
-                "status",
-                "priority",
-                "assignee",
-                "reporter",
-                "created",
-                "updated",
-                "labels",
-                "components",
-                "attachment",
-                "issuelinks",
-            ],
-        }
+        fields = [
+            "summary",
+            "description",
+            "issuetype",
+            "status",
+            "priority",
+            "assignee",
+            "reporter",
+            "created",
+            "updated",
+            "labels",
+            "components",
+            "attachment",
+            "issuelinks",
+        ]
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                url, auth=self.auth, json=payload, timeout=30.0
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await self._call_jira(
+            self.jira.jql,
+            jql,
+            limit=max_results,
+            start=start_at,
+            fields=fields,
+            expand='renderedFields',
+        )
 
         issues = data.get("issues", [])
         return [self._parse_issue(issue) for issue in issues]
 
     async def _get_issue_raw(self, issue_key: str) -> Dict[str, Any]:
         """Get raw issue data from Jira API."""
-        url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, auth=self.auth, timeout=30.0)
-            response.raise_for_status()
-            return response.json()
+        return await self._call_jira(
+            self.jira.issue,
+            issue_key,
+            expand='renderedFields',
+        )
 
     def _parse_issue(self, issue_data: Dict[str, Any]) -> JiraStory:
         """
