@@ -27,11 +27,10 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = Field(default=None, description="Anthropic (Claude) API key (optional)")
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key (optional)")
 
-    # Atlassian Configuration
-    jira_base_url: str = Field(default="https://example.atlassian.net", description="Jira base URL")
-    jira_email: str = Field(default="user@example.com", description="Jira user email")
-    jira_api_token: str = Field(default="", description="Jira API token")
-    confluence_api_token: Optional[str] = Field(default=None, description="Confluence API token")
+    # Atlassian Configuration (unified URL for both Jira and Confluence)
+    atlassian_base_url: str = Field(default="https://example.atlassian.net", description="Atlassian base URL (used for both Jira and Confluence)")
+    atlassian_email: str = Field(default="user@example.com", description="Atlassian user email")
+    atlassian_api_token: str = Field(default="", description="Atlassian API token")
 
     # Zephyr Configuration
     zephyr_api_token: str = Field(default="", description="Zephyr Scale API token")
@@ -79,6 +78,16 @@ class Settings(BaseSettings):
     )
     temperature: float = Field(default=0.8, description="AI temperature for generation (higher = more creative)")
     max_tokens: int = Field(default=10000, description="Max tokens for AI responses")
+    
+    # RAG Configuration
+    enable_rag: bool = Field(default=True, description="Enable RAG for context retrieval")
+    rag_collection_path: str = Field(default="./data/chroma", description="ChromaDB storage path")
+    embedding_model: str = Field(default="text-embedding-3-small", description="OpenAI embedding model")
+    rag_top_k_tests: int = Field(default=5, description="Number of similar test plans to retrieve")
+    rag_top_k_docs: int = Field(default=10, description="Number of similar docs to retrieve")
+    rag_top_k_stories: int = Field(default=10, description="Number of similar Jira stories to retrieve")
+    rag_top_k_existing: int = Field(default=20, description="Number of similar existing tests to retrieve")
+    rag_auto_index: bool = Field(default=True, description="Automatically index after test generation")
 
 
 # Global settings instance

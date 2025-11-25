@@ -15,17 +15,17 @@ def prompt_for_config() -> WombaConfig:
     print("\n" + "=" * 80)
     print("🚀 Womba First-Time Setup")
     print("=" * 80)
-    print("\nLet's configure Womba to work with your Jira, Zephyr, and repositories.")
+    print("\nLet's configure Womba to work with your Atlassian (Jira/Confluence), Zephyr, and repositories.")
     print("You can skip optional fields by pressing Enter.\n")
     
     config = WombaConfig()
     
-    # Jira settings
-    print("📋 Jira Configuration")
+    # Atlassian settings
+    print("📋 Atlassian Configuration (Jira & Confluence)")
     print("-" * 40)
-    config.jira_url = input("Jira URL (e.g., https://yourcompany.atlassian.net): ").strip()
-    config.jira_email = input("Jira email: ").strip()
-    config.jira_api_token = input("Jira API token: ").strip()
+    config.atlassian_url = input("Atlassian URL (e.g., https://yourcompany.atlassian.net): ").strip()
+    config.atlassian_email = input("Atlassian email: ").strip()
+    config.atlassian_api_token = input("Atlassian API token: ").strip()
     
     # Zephyr settings
     print("\n🧪 Zephyr Scale Configuration")
@@ -73,6 +73,18 @@ def prompt_for_config() -> WombaConfig:
     ai_tool = input("AI code generation tool (aider/cursor) [aider]: ").strip()
     if ai_tool:
         config.ai_tool = ai_tool
+    
+    # RAG Settings
+    print("\n🧠 RAG (Retrieval-Augmented Generation) Configuration")
+    print("-" * 40)
+    print("RAG ensures test generation uses your company's context and past patterns.")
+    print("This improves consistency and prevents generic tests.")
+    rag_choice = input("Enable RAG? (y/n) [y]: ").strip().lower()
+    config.enable_rag = rag_choice != 'n'
+    
+    if config.enable_rag:
+        rag_auto = input("Auto-index test plans after generation? (y/n) [y]: ").strip().lower()
+        config.rag_auto_index = rag_auto != 'n'
     
     # Womba API (optional)
     print("\n🌐 Womba Cloud (Optional)")
@@ -134,9 +146,9 @@ def show_config() -> None:
     print("=" * 80)
     
     print("\n🔐 Credentials")
-    print(f"  Jira URL:         {config.jira_url or '(not set)'}")
-    print(f"  Jira Email:       {config.jira_email or '(not set)'}")
-    print(f"  Jira API Token:   {'*' * 20 if config.jira_api_token else '(not set)'}")
+    print(f"  Atlassian URL:    {config.atlassian_url or '(not set)'}")
+    print(f"  Atlassian Email:  {config.atlassian_email or '(not set)'}")
+    print(f"  Atlassian Token:  {'*' * 20 if config.atlassian_api_token else '(not set)'}")
     print(f"  Zephyr Token:     {'*' * 20 if config.zephyr_api_token else '(not set)'}")
     print(f"  OpenAI API Key:   {'*' * 20 if config.openai_api_key else '(not set)'}")
     
@@ -150,6 +162,8 @@ def show_config() -> None:
     print(f"  AI Tool:          {config.ai_tool}")
     print(f"  Auto Upload:      {config.auto_upload}")
     print(f"  Auto Create PR:   {config.auto_create_pr}")
+    print(f"  RAG Enabled:      {config.enable_rag}")
+    print(f"  RAG Auto-Index:   {config.rag_auto_index}")
     
     print("\n☁️  Cloud Sync")
     print(f"  Womba API Key:    {'*' * 20 if config.womba_api_key else '(not configured)'}")

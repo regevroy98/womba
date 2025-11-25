@@ -7,10 +7,10 @@ from typing import Dict, List, Optional
 import httpx
 from loguru import logger
 
-from src.config.settings import settings
+from src.core.atlassian_client import AtlassianClient
 
 
-class ConfluenceClient:
+class ConfluenceClient(AtlassianClient):
     """Client for interacting with Confluence API."""
 
     def __init__(
@@ -23,14 +23,11 @@ class ConfluenceClient:
         Initialize Confluence client.
 
         Args:
-            base_url: Confluence base URL (defaults to Jira base URL)
-            email: Confluence user email (defaults to Jira email)
-            api_token: Confluence API token (defaults to Jira token or confluence token)
+            base_url: Atlassian base URL (defaults to settings)
+            email: Atlassian user email (defaults to settings)
+            api_token: Atlassian API token (defaults to settings)
         """
-        self.base_url = (base_url or settings.jira_base_url).rstrip("/")
-        self.email = email or settings.jira_email
-        self.api_token = api_token or settings.confluence_api_token or settings.jira_api_token
-        self.auth = (self.email, self.api_token)
+        super().__init__(base_url=base_url, email=email, api_token=api_token)
 
     async def get_page(self, page_id: str) -> Dict:
         """
@@ -55,13 +52,14 @@ class ConfluenceClient:
             response.raise_for_status()
             return response.json()
 
-    async def search_pages(self, cql: str, limit: int = 25) -> List[Dict]:
+    async def search_pages(self, cql: str, limit: int = 25, start: int = 0) -> List[Dict]:
         """
-        Search for Confluence pages using CQL.
+        Search for Confluence pages using CQL with pagination support.
 
         Args:
             cql: Confluence Query Language string
-            limit: Maximum results
+            limit: Maximum results per page
+            start: Start index for pagination
 
         Returns:
             List of page data
@@ -69,10 +67,10 @@ class ConfluenceClient:
         Raises:
             httpx.HTTPError: If the request fails
         """
-        logger.info(f"Searching Confluence with CQL: {cql}")
+        logger.info(f"Searching Confluence with CQL: {cql} (limit={limit}, start={start})")
 
         url = f"{self.base_url}/wiki/rest/api/content/search"
-        params = {"cql": cql, "limit": limit, "expand": "body.storage"}
+        params = {"cql": cql, "limit": limit, "start": start, "expand": "body.storage,space"}
 
         async with httpx.AsyncClient() as client:
             response = await client.get(url, auth=self.auth, params=params, timeout=30.0)

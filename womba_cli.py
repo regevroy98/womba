@@ -6,6 +6,7 @@ Womba CLI - Simple interface for AI-powered test generation
 import sys
 import argparse
 from pathlib import Path
+from loguru import logger
 
 
 def main():
@@ -28,12 +29,19 @@ Examples:
   womba automate PLAT-12991 --repo /path/to/test/repo
   womba automate PLAT-12991 --repo /path/to/test/repo --framework playwright
   womba automate PLAT-12991 --repo /path/to/test/repo --ai-tool cursor
+  
+  # RAG (Retrieval-Augmented Generation) management:
+  womba index PLAT-12991                 # Index a story's context
+  womba index-all                        # Index all available data (batch)
+  womba rag-stats                        # Show RAG statistics
+  womba rag-clear                        # Clear RAG database
         """
     )
     
     parser.add_argument(
         'command',
-        choices=['generate', 'upload', 'evaluate', 'configure', 'automate', 'all'],
+        choices=['generate', 'upload', 'evaluate', 'configure', 'automate', 'all', 
+                 'index', 'index-all', 'rag-stats', 'rag-clear'],
         help='Command to execute'
     )
     
@@ -89,37 +97,129 @@ Examples:
     
     args = parser.parse_args()
     
-    # Handle configure command (no story key needed)
+    # Handle commands that don't need story key
     if args.command == 'configure':
         from src.config.interactive_setup import ensure_config
         ensure_config(force_setup=True)
         return
     
+    if args.command == 'rag-stats':
+        from src.cli.rag_commands import show_rag_stats
+        show_rag_stats()
+        return
+    
+    if args.command == 'rag-clear':
+        from src.cli.rag_commands import clear_rag_database
+        clear_rag_database(confirm=args.yes)
+        return
+    
+    if args.command == 'index-all':
+        import asyncio
+        from src.config.config_manager import ConfigManager
+        from src.cli.rag_commands import index_all_data
+        
+        try:
+            # Load config (don't prompt if missing)
+            manager = ConfigManager()
+            if not manager.exists():
+                print("\n❌ No configuration found!")
+                print("💡 Run 'womba configure' first to set up your credentials")
+                return
+            
+            config = manager.load()
+            if not config:
+                print("\n❌ Error loading configuration!")
+                print("💡 Run 'womba configure' to reconfigure")
+                return
+            
+            # Use configured project key (required)
+            project_key = config.project_key
+            if not project_key:
+                print("\n❌ Project key not configured!")
+                print("💡 Run 'womba configure' to set your project key")
+                return
+            
+            print(f"\n🔄 Starting batch indexing for project: {project_key}")
+            print("(Using configured project key)")
+            
+            print("\nThis will index all available data from your project.")
+            print("This may take several minutes.\n")
+            
+            # Run async indexing
+            results = asyncio.run(index_all_data(project_key))
+            
+            print("\n✅ Batch indexing complete!")
+            print(f"📊 Indexed: {results['tests']} tests, {results['stories']} stories, {results['docs']} docs")
+            print("💡 Run 'womba rag-stats' to see detailed statistics")
+            
+        except ValueError as e:
+            print(f"\n❌ Configuration Error: {e}")
+            print("💡 Run 'womba configure' to set up your API keys")
+            return
+        except Exception as e:
+            print(f"\n❌ Indexing failed: {e}")
+            logger.exception("Full error details:")
+            return
+    
     # Ensure config exists for other commands
     from src.config.interactive_setup import ensure_config
     config = ensure_config()
     
-    # All other commands need a story key
-    if not args.story_key:
+    # All other commands need a story key (except those already handled)
+    if not args.story_key and args.command not in ['rag-stats', 'rag-clear', 'index-all', 'configure']:
         parser.error(f"Story key is required for '{args.command}' command")
     
     # Route to appropriate handler
-    if args.command == 'generate':
-        from generate_test_plan import main as generate_main
-        generate_main(args.story_key)
+    if args.command == 'index':
+        import asyncio
+        from src.cli.rag_commands import index_story_context
+        
+        try:
+            asyncio.run(index_story_context(args.story_key))
+        except ValueError as e:
+            print(f"\n❌ Configuration Error: {e}")
+            print("💡 Run 'womba configure' to set up your API keys")
+            return
+        except Exception as e:
+            print(f"\n❌ Indexing failed: {e}")
+            logger.exception("Full error details:")
+            return
+    
+    elif args.command == 'generate':
+        import asyncio
+        from src.workflows.full_workflow import FullWorkflowOrchestrator
+        
+        orchestrator = FullWorkflowOrchestrator(config)
+        orchestrator.story_key = args.story_key
+        result = asyncio.run(orchestrator._generate_test_plan())
+        print(f"✅ Generated test plan for {args.story_key}")
+        
+        if config.enable_rag:
+            print("📊 RAG was used for context-grounded generation")
         
         if args.upload:
             print("\n🚀 Auto-uploading to Zephyr...")
-            from upload_to_zephyr import main as upload_main
-            upload_main(args.story_key)
+            upload_result = asyncio.run(orchestrator._upload_to_zephyr())
+            print(f"✅ Uploaded to Zephyr: {upload_result}")
     
     elif args.command == 'upload':
-        from upload_to_zephyr import main as upload_main
-        upload_main(args.story_key)
+        import asyncio
+        from src.workflows.full_workflow import FullWorkflowOrchestrator
+        
+        orchestrator = FullWorkflowOrchestrator(config)
+        orchestrator.story_key = args.story_key
+        # First generate test plan, then upload
+        asyncio.run(orchestrator._generate_test_plan())
+        result = asyncio.run(orchestrator._upload_to_zephyr())
+        print(f"✅ Uploaded to Zephyr: {len(result)}")
     
     elif args.command == 'evaluate':
-        from evaluate_quality import main as evaluate_main
-        evaluate_main(args.story_key)
+        import asyncio
+        from src.ai.quality_scorer import QualityScorer
+        
+        scorer = QualityScorer()
+        result = asyncio.run(scorer.evaluate_test_plan(args.story_key))
+        print(f"✅ Quality evaluation: {result}")
     
     elif args.command == 'automate':
         # Validate requirements
@@ -127,14 +227,14 @@ Examples:
             parser.error("--repo is required for 'automate' command")
         
         import asyncio
-        from automate_tests import main as automate_main
-        asyncio.run(automate_main(
+        from src.workflows.full_workflow import FullWorkflowOrchestrator
+        
+        orchestrator = FullWorkflowOrchestrator(config)
+        result = asyncio.run(orchestrator.run(
             args.story_key,
-            args.repo,
-            args.framework,
-            args.ai_tool,
-            args.create_pr
+            args.repo
         ))
+        print(f"✅ Automation complete: {result}")
     
     elif args.command == 'all':
         # Full end-to-end workflow
